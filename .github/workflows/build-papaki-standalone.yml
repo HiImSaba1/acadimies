@@ -32,7 +32,8 @@ jobs:
             gcc-c++ \
             make \
             python3.12 \
-            binutils
+            binutils \
+            findutils
 
           echo "=== GLIBC ==="
           ldd --version | head -n 1
@@ -304,4 +305,5 @@ jobs:
             ${{ env.ARCHIVE }}.sha256
           retention-days: 7
           if-no-files-found: error
+
 
