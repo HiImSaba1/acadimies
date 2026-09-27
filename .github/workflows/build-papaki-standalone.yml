@@ -1,4 +1,4 @@
-name: Build Papaki Standalone
+﻿name: Build Papaki Standalone
 
 on:
   workflow_dispatch:
@@ -12,36 +12,144 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    container:
+      image: rockylinux:8
+
+    timeout-minutes: 25
 
     steps:
+      - name: Install system build tools
+        run: |
+          set -euo pipefail
+
+          dnf install -y \
+            git \
+            curl \
+            tar \
+            gzip \
+            xz \
+            gcc \
+            gcc-c++ \
+            make \
+            python3 \
+            binutils
+
+          echo "=== GLIBC ==="
+          ldd --version | head -n 1
+
+          echo "=== GCC ==="
+          gcc --version | head -n 1
+
+      - name: Install Node.js 22
+        run: |
+          set -euo pipefail
+
+          NODE_VERSION="22.23.2"
+
+          curl -fsSLO \
+            "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz"
+
+          tar -xJf "node-v${NODE_VERSION}-linux-x64.tar.xz"
+
+          cp -a \
+            "node-v${NODE_VERSION}-linux-x64/." \
+            /usr/local/
+
+          node --version
+          npm --version
+
+          echo "=== NODE GLIBC REQUIREMENTS ==="
+          strings "$(command -v node)" |
+            grep -o 'GLIBC_[0-9.]*' |
+            sort -Vu |
+            tail -20
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-
       - name: Install dependencies
-        run: npm ci
+        env:
+          npm_config_build_from_source: "true"
+        run: |
+          set -euo pipefail
 
-      - name: Verify argon2 on Linux
+          npm ci
+
+      - name: Verify build environment
+        run: |
+          set -euo pipefail
+
+          echo "=== GLIBC ==="
+          ldd --version | head -n 1
+
+          echo "=== NODE ==="
+          node --version
+
+          echo "=== NPM ==="
+          npm --version
+
+          echo "=== ARGON2 ==="
+          node -p "require('./node_modules/argon2/package.json').version"
+
+      - name: Verify argon2 native compatibility
+        run: |
+          set -euo pipefail
+
+          ARGON2_NATIVE="$(
+            find node_modules/argon2 \
+              -type f \
+              -name '*.node' \
+              -print -quit
+          )"
+
+          if [ -z "$ARGON2_NATIVE" ]; then
+            echo "ERROR: No compiled argon2 native binary found."
+            exit 1
+          fi
+
+          echo "Argon2 native binary:"
+          echo "$ARGON2_NATIVE"
+
+          echo
+          echo "=== ARGON2 GLIBC REQUIREMENTS ==="
+
+          strings "$ARGON2_NATIVE" |
+            grep -o 'GLIBC_[0-9.]*' |
+            sort -Vu
+
+          if strings "$ARGON2_NATIVE" |
+              grep -Eq 'GLIBC_2\.(29|3[0-9]|[4-9][0-9])'; then
+            echo "ERROR: Argon2 requires glibc newer than Papaki glibc 2.28."
+            exit 1
+          fi
+
+          echo
+          echo "Argon2 glibc compatibility: OK"
+
+      - name: Verify argon2 runtime
         run: |
           node <<'NODE'
           const argon2 = require("argon2");
 
           (async () => {
-            const password = "acadimies-github-actions-smoke-test";
+            const password = "acadimies-rocky8-build-test";
+
             const hash = await argon2.hash(password);
-            const ok = await argon2.verify(hash, password);
+            const correct = await argon2.verify(hash, password);
+            const incorrect = await argon2.verify(
+              hash,
+              password + "-wrong"
+            );
 
-            console.log("argon2 hash/verify:", ok);
+            console.log("hash created:", hash.startsWith("$argon2"));
+            console.log("correct password:", correct);
+            console.log("wrong password rejected:", !incorrect);
 
-            if (!ok) {
+            if (!correct || incorrect) {
               process.exit(1);
             }
+
+            console.log("ARGON2 ROCKY8 TEST: OK");
           })().catch((error) => {
             console.error(error);
             process.exit(1);
@@ -51,9 +159,10 @@ jobs:
       - name: Build Next.js standalone
         env:
           NEXT_TELEMETRY_DISABLED: "1"
-          # Build-time placeholder only. No real database credentials are stored in GitHub.
           DATABASE_URL: "mysql://build:build@127.0.0.1:3306/next_acadimies"
-        run: npm run build
+        run: |
+          set -euo pipefail
+          npm run build
 
       - name: Verify standalone output
         run: |
@@ -64,7 +173,12 @@ jobs:
           test -f .next/BUILD_ID
 
           echo "BUILD_ID=$(cat .next/BUILD_ID)"
-          echo "Next.js version=$(node -p "require('./node_modules/next/package.json').version")"
+
+          NEXT_VERSION="$(
+            node -p "require('./node_modules/next/package.json').version"
+          )"
+
+          echo "Next.js version=$NEXT_VERSION"
 
       - name: Copy static assets into standalone
         run: |
@@ -77,34 +191,45 @@ jobs:
             cp -a public .next/standalone/public
           fi
 
-      - name: Verify argon2 is traced into standalone
+      - name: Verify standalone argon2
+        working-directory: .next/standalone
         run: |
           set -euo pipefail
 
-          echo "=== argon2 files in standalone ==="
-          find .next/standalone -type f -path '*argon2*' -print
-
-          ARGON2_NATIVE="$(find .next/standalone \
-            -type f \
-            -path '*/argon2/prebuilds/linux-x64/argon2.glibc.node' \
-            -print -quit)"
+          ARGON2_NATIVE="$(
+            find node_modules/argon2 \
+              -type f \
+              -name '*.node' \
+              -print -quit
+          )"
 
           if [ -z "$ARGON2_NATIVE" ]; then
-            echo "ERROR: Linux x64 argon2.glibc.node is missing from standalone output."
+            echo "ERROR: Argon2 missing from standalone output."
             exit 1
           fi
 
-          echo "Found Linux argon2 native binary:"
+          echo "Standalone Argon2 binary:"
           echo "$ARGON2_NATIVE"
 
-      - name: Verify argon2 from standalone runtime
-        working-directory: .next/standalone
-        run: |
+          echo
+          echo "=== STANDALONE ARGON2 GLIBC ==="
+
+          strings "$ARGON2_NATIVE" |
+            grep -o 'GLIBC_[0-9.]*' |
+            sort -Vu
+
+          if strings "$ARGON2_NATIVE" |
+              grep -Eq 'GLIBC_2\.(29|3[0-9]|[4-9][0-9])'; then
+            echo "ERROR: Standalone Argon2 requires glibc > 2.28."
+            exit 1
+          fi
+
           node <<'NODE'
           const argon2 = require("argon2");
 
           (async () => {
-            const password = "acadimies-standalone-smoke-test";
+            const password = "acadimies-standalone-rocky8-test";
+
             const hash = await argon2.hash(password);
             const ok = await argon2.verify(hash, password);
 
@@ -113,21 +238,32 @@ jobs:
             if (!ok) {
               process.exit(1);
             }
+
+            console.log("STANDALONE ARGON2 TEST: OK");
           })().catch((error) => {
             console.error(error);
             process.exit(1);
           });
           NODE
 
-      - name: Inspect native modules
+      - name: Inspect standalone native modules
         run: |
           set -euo pipefail
 
-          echo "=== Native .node files ==="
-          find .next/standalone -type f -name '*.node' -print | sort || true
+          echo "=== NATIVE MODULES ==="
+          find .next/standalone \
+            -type f \
+            -name '*.node' \
+            -print |
+            sort || true
 
-          echo "=== SWC native files ==="
-          find .next/standalone -type f \( -iname '*swc*.node' -o -path '*@next/swc*' \) -print | sort || true
+          echo
+          echo "=== SWC ==="
+          find .next/standalone \
+            -type f \
+            \( -iname '*swc*.node' -o -path '*@next/swc*' \) \
+            -print |
+            sort || true
 
       - name: Create deployment archive
         run: |
@@ -142,7 +278,6 @@ jobs:
 
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
-          echo "=== Archive ==="
           ls -lh "$ARCHIVE" "${ARCHIVE}.sha256"
           cat "${ARCHIVE}.sha256"
 
