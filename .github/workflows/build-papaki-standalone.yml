@@ -1,4 +1,4 @@
-﻿name: Build Papaki Standalone
+name: Build Papaki Standalone
 
 on:
   workflow_dispatch:
@@ -51,6 +51,8 @@ jobs:
       - name: Build Next.js standalone
         env:
           NEXT_TELEMETRY_DISABLED: "1"
+          # Build-time placeholder only. No real database credentials are stored in GitHub.
+          DATABASE_URL: "mysql://build:build@127.0.0.1:3306/next_acadimies"
         run: npm run build
 
       - name: Verify standalone output
