@@ -168,7 +168,7 @@ jobs:
           DATABASE_URL: "mysql://build:build@127.0.0.1:3306/next_acadimies"
         run: |
           set -euo pipefail
-          npm run build
+          npm run build -- --webpack
 
       - name: Verify standalone output
         run: |
@@ -305,6 +305,7 @@ jobs:
             ${{ env.ARCHIVE }}.sha256
           retention-days: 7
           if-no-files-found: error
+
 
 
 
