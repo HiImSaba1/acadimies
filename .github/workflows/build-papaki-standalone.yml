@@ -31,7 +31,7 @@ jobs:
             gcc \
             gcc-c++ \
             make \
-            python3 \
+            python3.12 \
             binutils
 
           echo "=== GLIBC ==="
@@ -39,6 +39,9 @@ jobs:
 
           echo "=== GCC ==="
           gcc --version | head -n 1
+
+          echo "=== PYTHON ==="
+          python3.12 --version
 
       - name: Install Node.js 22
         run: |
@@ -70,6 +73,8 @@ jobs:
       - name: Install dependencies
         env:
           npm_config_build_from_source: "true"
+          npm_config_python: "/usr/bin/python3.12"
+          PYTHON: "/usr/bin/python3.12"
         run: |
           set -euo pipefail
 
@@ -299,3 +304,4 @@ jobs:
             ${{ env.ARCHIVE }}.sha256
           retention-days: 7
           if-no-files-found: error
+
