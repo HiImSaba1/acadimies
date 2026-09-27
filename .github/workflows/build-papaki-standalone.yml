@@ -1,0 +1,164 @@
+﻿name: Build Papaki Standalone
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify argon2 on Linux
+        run: |
+          node <<'NODE'
+          const argon2 = require("argon2");
+
+          (async () => {
+            const password = "acadimies-github-actions-smoke-test";
+            const hash = await argon2.hash(password);
+            const ok = await argon2.verify(hash, password);
+
+            console.log("argon2 hash/verify:", ok);
+
+            if (!ok) {
+              process.exit(1);
+            }
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
+
+      - name: Build Next.js standalone
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npm run build
+
+      - name: Verify standalone output
+        run: |
+          set -euo pipefail
+
+          test -d .next/standalone
+          test -f .next/standalone/server.js
+          test -f .next/BUILD_ID
+
+          echo "BUILD_ID=$(cat .next/BUILD_ID)"
+          echo "Next.js version=$(node -p "require('./node_modules/next/package.json').version")"
+
+      - name: Copy static assets into standalone
+        run: |
+          set -euo pipefail
+
+          mkdir -p .next/standalone/.next
+          cp -a .next/static .next/standalone/.next/static
+
+          if [ -d public ]; then
+            cp -a public .next/standalone/public
+          fi
+
+      - name: Verify argon2 is traced into standalone
+        run: |
+          set -euo pipefail
+
+          echo "=== argon2 files in standalone ==="
+          find .next/standalone -type f -path '*argon2*' -print
+
+          ARGON2_NATIVE="$(find .next/standalone \
+            -type f \
+            -path '*/argon2/prebuilds/linux-x64/argon2.glibc.node' \
+            -print -quit)"
+
+          if [ -z "$ARGON2_NATIVE" ]; then
+            echo "ERROR: Linux x64 argon2.glibc.node is missing from standalone output."
+            exit 1
+          fi
+
+          echo "Found Linux argon2 native binary:"
+          echo "$ARGON2_NATIVE"
+
+      - name: Verify argon2 from standalone runtime
+        working-directory: .next/standalone
+        run: |
+          node <<'NODE'
+          const argon2 = require("argon2");
+
+          (async () => {
+            const password = "acadimies-standalone-smoke-test";
+            const hash = await argon2.hash(password);
+            const ok = await argon2.verify(hash, password);
+
+            console.log("standalone argon2 hash/verify:", ok);
+
+            if (!ok) {
+              process.exit(1);
+            }
+          })().catch((error) => {
+            console.error(error);
+            process.exit(1);
+          });
+          NODE
+
+      - name: Inspect native modules
+        run: |
+          set -euo pipefail
+
+          echo "=== Native .node files ==="
+          find .next/standalone -type f -name '*.node' -print | sort || true
+
+          echo "=== SWC native files ==="
+          find .next/standalone -type f \( -iname '*swc*.node' -o -path '*@next/swc*' \) -print | sort || true
+
+      - name: Create deployment archive
+        run: |
+          set -euo pipefail
+
+          SHORT_SHA="${GITHUB_SHA::7}"
+          ARCHIVE="acadimies-papaki-standalone-${SHORT_SHA}.tar.gz"
+
+          tar -C .next/standalone -czf "$ARCHIVE" .
+
+          sha256sum "$ARCHIVE" > "${ARCHIVE}.sha256"
+
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+          echo "=== Archive ==="
+          ls -lh "$ARCHIVE" "${ARCHIVE}.sha256"
+          cat "${ARCHIVE}.sha256"
+
+      - name: Verify deployment archive
+        run: |
+          set -euo pipefail
+
+          tar -tzf "$ARCHIVE" >/dev/null
+          sha256sum -c "${ARCHIVE}.sha256"
+
+          echo "Archive verification: OK"
+
+      - name: Upload deployment artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: acadimies-papaki-standalone-${{ github.sha }}
+          path: |
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+          retention-days: 7
+          if-no-files-found: error

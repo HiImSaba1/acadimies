@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  output: "standalone",
   distDir: process.env.NEXT_DIST_DIR ?? ".next",
   // Papaki/Plesk shared hosting has a low process ceiling. Keep production
   // builds on one worker; local development remains otherwise unchanged.
